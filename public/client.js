@@ -32,6 +32,12 @@
   }
   let isTouchDevice = detectTouch();
 
+  // Texto del menú según el dispositivo
+  const hintEl = document.getElementById('hint');
+  if (hintEl && isTouchDevice) {
+    hintEl.textContent = 'Arrastra el dedo · SPLIT para dividir · EJECT para expulsar';
+  }
+
   let selectedSkin = SKINS[Math.floor(Math.random() * SKINS.length)];
   let selectedMode = 'ffa';
 
@@ -221,7 +227,10 @@
   // si no, usamos el mismo host que sirve la web (dev local o Railway directo)
   function getServerWsUrl() {
     const SERVER_HOST = 'agario-jmr-production.up.railway.app';
-    const isWeb = location.protocol === 'http:' || location.protocol === 'https:';
+    // Detectar Capacitor: expone window.Capacitor; además sirve la app desde https://localhost
+    const isCapacitor = !!window.Capacitor ||
+      (location.protocol === 'https:' && (location.hostname === 'localhost' || location.hostname === '127.0.0.1'));
+    const isWeb = (location.protocol === 'http:' || location.protocol === 'https:') && !isCapacitor;
     if (!isWeb) {
       // Capacitor/file/wrapper nativo
       return `wss://${SERVER_HOST}`;
@@ -231,8 +240,28 @@
     return `${proto}://${location.host}`;
   }
 
+  let gotInit = false;
+  function setPlayBusy(busy, label) {
+    playBtn.disabled = busy;
+    playBtn.textContent = label || 'Jugar';
+    playBtn.classList.toggle('busy', !!busy);
+  }
   function connect() {
-    ws = new WebSocket(getServerWsUrl());
+    gotInit = false;
+    setPlayBusy(true, 'Conectando…');
+    try {
+      ws = new WebSocket(getServerWsUrl());
+    } catch (err) {
+      setPlayBusy(false, 'Sin conexión, reintenta');
+      return;
+    }
+    // Timeout de seguridad: si en 8s no recibimos `init`, asumimos fallo
+    const connectTimeout = setTimeout(() => {
+      if (!gotInit) {
+        try { ws && ws.close(); } catch {}
+        setPlayBusy(false, 'Sin conexión, reintenta');
+      }
+    }, 8000);
     ws.addEventListener('open', () => {
       ws.send(JSON.stringify({
         type: 'join',
@@ -241,9 +270,16 @@
         mode: selectedMode,
       }));
     });
+    ws.addEventListener('error', () => {
+      // El navegador no expone detalles por seguridad, pero al menos avisamos
+      if (!gotInit) setPlayBusy(false, 'Sin conexión, reintenta');
+    });
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'init') {
+        gotInit = true;
+        clearTimeout(connectTimeout);
+        setPlayBusy(false);
         myId = msg.id;
         world = msg.world;
         myTeam = msg.team;
@@ -347,19 +383,34 @@
   });
 
   // ===== Input táctil =====
-  function updateTouch(e) {
+  // Joystick virtual relativo: donde apoyas el dedo se ancla el origen y solo cuenta
+  // el desplazamiento. Así el dedo no tapa al player y un pequeño gesto basta.
+  let touchAnchor = null;
+  let touchCurrent = null;
+  const TOUCH_SENSITIVITY = 1.4;
+
+  function applyTouchDelta(t) {
+    if (!touchAnchor) return;
+    touchCurrent = { x: t.clientX, y: t.clientY };
+    const dx = t.clientX - touchAnchor.x;
+    const dy = t.clientY - touchAnchor.y;
+    mouse.x = canvas.width / 2 + dx * TOUCH_SENSITIVITY;
+    mouse.y = canvas.height / 2 + dy * TOUCH_SENSITIVITY;
+    touchActive = true;
+  }
+
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
     lastTouchAt = performance.now();
     if (e.touches && e.touches.length > 0) {
       const t = e.touches[0];
-      mouse.x = t.clientX;
-      mouse.y = t.clientY;
+      touchAnchor = { x: t.clientX, y: t.clientY };
+      touchCurrent = { x: t.clientX, y: t.clientY };
+      // Al iniciar el toque sin moverse aún → offset 0 → célula quieta
+      mouse.x = canvas.width / 2;
+      mouse.y = canvas.height / 2;
       touchActive = true;
     }
-  }
-  canvas.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    updateTouch(e);
-    // Si el primer touch ocurre, garantizamos que se muestren los botones
     if (!hud.classList.contains('hidden')) {
       isTouchDevice = true;
       touchControls.classList.remove('hidden');
@@ -367,17 +418,27 @@
   }, { passive: false });
   canvas.addEventListener('touchmove', (e) => {
     e.preventDefault();
-    updateTouch(e);
+    lastTouchAt = performance.now();
+    if (e.touches && e.touches.length > 0) {
+      applyTouchDelta(e.touches[0]);
+    }
   }, { passive: false });
   canvas.addEventListener('touchend', (e) => {
-    e.preventDefault(); // evita que el navegador dispare mousemove/mousedown fantasma
+    e.preventDefault();
     if (!e.touches || e.touches.length === 0) {
-      // Al soltar, parar el movimiento → target = centro de la pantalla = centro de la célula
+      // Al soltar, parar el movimiento → offset = 0 desde el centro
       mouse.x = canvas.width / 2;
       mouse.y = canvas.height / 2;
       touchActive = false;
+      touchAnchor = null;
+      touchCurrent = null;
     } else {
-      updateTouch(e);
+      // Si quedaba otro dedo, re-anclamos sobre él para evitar saltos
+      const t = e.touches[0];
+      touchAnchor = { x: t.clientX, y: t.clientY };
+      touchCurrent = { x: t.clientX, y: t.clientY };
+      mouse.x = canvas.width / 2;
+      mouse.y = canvas.height / 2;
     }
   }, { passive: false });
   canvas.addEventListener('touchcancel', (e) => {
@@ -385,6 +446,8 @@
     mouse.x = canvas.width / 2;
     mouse.y = canvas.height / 2;
     touchActive = false;
+    touchAnchor = null;
+    touchCurrent = null;
   }, { passive: false });
 
   // Botones flotantes de acción
@@ -595,6 +658,48 @@
     ctx.strokeStyle = shade(color, -0.40);
     ctx.lineWidth = Math.max(1.5, r * 0.08);
     ctx.stroke();
+  }
+
+  function drawJoystick() {
+    if (!touchAnchor || !touchCurrent) return;
+    const BASE_R = 56;
+    const STICK_R = 26;
+    // Limita el stick visualmente al borde de la base para que se vea como joystick real
+    const dx = touchCurrent.x - touchAnchor.x;
+    const dy = touchCurrent.y - touchAnchor.y;
+    const d = Math.hypot(dx, dy);
+    const max = BASE_R - STICK_R * 0.4;
+    const k = d > max ? max / d : 1;
+    const sx = touchAnchor.x + dx * k;
+    const sy = touchAnchor.y + dy * k;
+
+    ctx.save();
+    // Línea entre base y stick
+    if (d > 4) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(touchAnchor.x, touchAnchor.y);
+      ctx.lineTo(sx, sy);
+      ctx.stroke();
+    }
+    // Base
+    ctx.beginPath();
+    ctx.arc(touchAnchor.x, touchAnchor.y, BASE_R, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Stick
+    ctx.beginPath();
+    ctx.arc(sx, sy, STICK_R, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawVirus(x, y, r, time) {
@@ -828,6 +933,8 @@
       redScoreEl.textContent = lastMeta.teams.red;
       blueScoreEl.textContent = lastMeta.teams.blue;
     }
+
+    drawJoystick();
 
     requestAnimationFrame(render);
   }
