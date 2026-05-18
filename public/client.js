@@ -217,9 +217,22 @@
     };
   }
 
-  function connect() {
+  // URL del servidor: si estamos dentro de la app (Capacitor/file/etc.) apuntamos a Railway,
+  // si no, usamos el mismo host que sirve la web (dev local o Railway directo)
+  function getServerWsUrl() {
+    const SERVER_HOST = 'agario-jmr-production.up.railway.app';
+    const isWeb = location.protocol === 'http:' || location.protocol === 'https:';
+    if (!isWeb) {
+      // Capacitor/file/wrapper nativo
+      return `wss://${SERVER_HOST}`;
+    }
+    // En web servida: usar el mismo host (funciona tanto en localhost como en Railway)
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}`);
+    return `${proto}://${location.host}`;
+  }
+
+  function connect() {
+    ws = new WebSocket(getServerWsUrl());
     ws.addEventListener('open', () => {
       ws.send(JSON.stringify({
         type: 'join',

@@ -4,3 +4,15 @@ npm-debug.log
 .DS_Store
 *.log
 .claude/
+
+# Capacitor / Android build artifacts
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/captures/
+android/local.properties
+android/app/release/
+android/app/debug/
+*.keystore
+*.jks

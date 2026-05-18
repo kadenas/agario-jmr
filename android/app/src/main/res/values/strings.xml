@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AgarJMR</string>
+    <string name="title_activity_main">AgarJMR</string>
+    <string name="package_name">app.kadenas.agariojmr</string>
+    <string name="custom_url_scheme">app.kadenas.agariojmr</string>
+</resources>

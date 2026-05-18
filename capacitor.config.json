@@ -1,0 +1,13 @@
+{
+  "appId": "app.kadenas.agariojmr",
+  "appName": "AgarJMR",
+  "webDir": "public",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#1a1f2e"
+  },
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false
+  }
+}
