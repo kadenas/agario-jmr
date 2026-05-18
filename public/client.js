@@ -195,12 +195,23 @@
     const now = performance.now();
     if (now - lastInputSent < 20) return;
     lastInputSent = now;
-    // Convertir mouse/touch a coordenadas del mundo usando la cámara que ESTÁ EN PANTALLA,
-    // no la posición del servidor (que puede llevar 100-150ms de retraso)
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const wx = camRender.x + (mouse.x - cx) / zoom;
-    const wy = camRender.y + (mouse.y - cy) / zoom;
+    const offsetX = mouse.x - cx;
+    const offsetY = mouse.y - cy;
+    const offsetLen = Math.hypot(offsetX, offsetY);
+
+    // Zona muerta: si el cursor/dedo está muy cerca del centro,
+    // mandamos un target estable (posición autoritativa del servidor)
+    // para que la célula pare sin oscilar.
+    if (offsetLen < 12) {
+      ws.send(JSON.stringify({ type: 'input', x: lastMeta.you.x, y: lastMeta.you.y }));
+      return;
+    }
+
+    // Movimiento normal: convertir usando la cámara renderizada (responsive)
+    const wx = camRender.x + offsetX / zoom;
+    const wy = camRender.y + offsetY / zoom;
     ws.send(JSON.stringify({ type: 'input', x: wx, y: wy }));
   }
 
@@ -553,11 +564,7 @@
       drawEjected(s.x, s.y, radiusFromMass(e.m) * zoom, e.c);
     }
 
-    for (const v of virusesList) {
-      const s = worldToScreen(v.x, v.y, camX, camY);
-      drawVirus(s.x, s.y, radiusFromMass(v.m) * zoom, now);
-    }
-
+    // Células primero, virus después → las células pasan por DEBAJO de los virus
     cellsList.sort((a, b) => a.m - b.m);
     for (const c of cellsList) {
       const s = worldToScreen(c.x, c.y, camX, camY);
@@ -585,6 +592,12 @@
         ctx.shadowBlur = 0;
         ctx.shadowOffsetY = 0;
       }
+    }
+
+    // Virus al final, por encima de las células
+    for (const v of virusesList) {
+      const s = worldToScreen(v.x, v.y, camX, camY);
+      drawVirus(s.x, s.y, radiusFromMass(v.m) * zoom, now);
     }
 
     massEl.textContent = `Masa: ${Math.round(totalMass)}`;
