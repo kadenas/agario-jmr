@@ -64,12 +64,30 @@
   let world = { width: 4000, height: 4000 };
   let myTeam = null;
   let mode = 'ffa';
-  let state = {
-    cells: [], pellets: [], viruses: [], ejected: [],
-    board: [], teams: null, you: { x: 0, y: 0 },
-  };
+
+  // Buffer de snapshots para interpolación (renderizamos ~100ms en el pasado)
+  const INTERP_DELAY = 100; // ms
+  const snapshots = []; // {t, cells: Map, pellets: Map, viruses: Map, ejected: Map, board, teams, you}
+  let lastMeta = { board: [], teams: null, you: { x: 0, y: 0 } };
+
   let mouse = { x: 0, y: 0 };
   let zoom = 1;
+
+  function snapshotFromMsg(msg) {
+    const cells = new Map();
+    for (const c of msg.cells) cells.set(c.id, c);
+    const pellets = new Map();
+    for (const p of msg.pellets) pellets.set(p.id, p);
+    const viruses = new Map();
+    for (const v of msg.viruses) viruses.set(v.id, v);
+    const ejected = new Map();
+    for (const e of msg.ejected) ejected.set(e.id, e);
+    return {
+      t: performance.now(),
+      cells, pellets, viruses, ejected,
+      board: msg.board, teams: msg.teams, you: msg.you,
+    };
+  }
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -94,11 +112,16 @@
         hud.classList.remove('hidden');
         teamScoresEl.classList.toggle('hidden', mode !== 'teams');
       } else if (msg.type === 'state') {
-        state = msg;
+        snapshots.push(snapshotFromMsg(msg));
+        // Mantén solo lo necesario para interpolar
+        while (snapshots.length > 6) snapshots.shift();
+        lastMeta = { board: msg.board, teams: msg.teams, you: msg.you };
       } else if (msg.type === 'dead') {
-        const totalMass = (state.cells || [])
-          .filter(c => c.pid === myId)
-          .reduce((s, c) => s + c.m, 0);
+        const latest = snapshots[snapshots.length - 1];
+        let totalMass = 0;
+        if (latest) {
+          for (const c of latest.cells.values()) if (c.pid === myId) totalMass += c.m;
+        }
         finalMassEl.textContent = `Masa final: ${totalMass}`;
         deadOverlay.classList.remove('hidden');
         hud.classList.add('hidden');
@@ -143,8 +166,8 @@
     // Convertir mouse a coordenadas del mundo
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const wx = state.you.x + (mouse.x - cx) / zoom;
-    const wy = state.you.y + (mouse.y - cy) / zoom;
+    const wx = lastMeta.you.x + (mouse.x - cx) / zoom;
+    const wy = lastMeta.you.y + (mouse.y - cy) / zoom;
     ws.send(JSON.stringify({ type: 'input', x: wx, y: wy }));
   }
 
@@ -233,17 +256,71 @@
     ctx.stroke();
   }
 
+  // Interpola un entity entre dos snapshots
+  function lerpEntity(a, b, t) {
+    return {
+      ...b,
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      m: a.m + (b.m - a.m) * t,
+    };
+  }
+
+  // Devuelve la lista interpolada de entities de un mapa concreto en el tiempo dado
+  function interpEntities(getMap, renderTime) {
+    if (snapshots.length === 0) return [];
+    // Encontrar dos snapshots que rodean renderTime
+    let s0 = null, s1 = null;
+    for (let i = snapshots.length - 1; i >= 0; i--) {
+      if (snapshots[i].t <= renderTime) { s0 = snapshots[i]; s1 = snapshots[i + 1] || null; break; }
+    }
+    if (!s0) { s0 = snapshots[0]; s1 = snapshots[1] || null; }
+    const mapA = getMap(s0);
+    const mapB = s1 ? getMap(s1) : mapA;
+    if (!s1) return [...mapA.values()];
+    const dt = s1.t - s0.t;
+    const t = dt > 0 ? Math.max(0, Math.min(1, (renderTime - s0.t) / dt)) : 0;
+    const out = [];
+    // Entities presentes en B (la siguiente posición conocida) — los preferimos
+    for (const [id, eB] of mapB) {
+      const eA = mapA.get(id);
+      if (eA) out.push(lerpEntity(eA, eB, t));
+      else out.push(eB); // nuevo: aparece directamente
+    }
+    // Entities que sólo están en A (desaparecen pronto): los dibujamos un poco más
+    for (const [id, eA] of mapA) {
+      if (!mapB.has(id)) out.push(eA);
+    }
+    return out;
+  }
+
   function render() {
     sendInput();
 
-    // Cámara: centrar en la masa propia
-    let camX = state.you.x;
-    let camY = state.you.y;
+    const renderTime = performance.now() - INTERP_DELAY;
+    const cellsList = interpEntities(s => s.cells, renderTime);
+    const pelletsList = interpEntities(s => s.pellets, renderTime);
+    const virusesList = interpEntities(s => s.viruses, renderTime);
+    const ejectedList = interpEntities(s => s.ejected, renderTime);
+
+    // Cámara: centrar en la masa propia interpolada
+    let camX = lastMeta.you.x;
+    let camY = lastMeta.you.y;
     let totalMass = 0;
-    for (const c of state.cells) {
-      if (c.pid === myId) totalMass += c.m;
+    let myCx = 0, myCy = 0, myMass = 0;
+    for (const c of cellsList) {
+      if (c.pid === myId) {
+        totalMass += c.m;
+        myCx += c.x * c.m;
+        myCy += c.y * c.m;
+        myMass += c.m;
+      }
     }
-    // Zoom inverso al tamaño
+    if (myMass > 0) {
+      camX = myCx / myMass;
+      camY = myCy / myMass;
+    }
+
     const targetZoom = totalMass > 0
       ? Math.max(0.35, Math.min(1.4, 50 / Math.sqrt(totalMass + 25)))
       : 1;
@@ -255,31 +332,26 @@
     drawGrid(camX, camY);
     drawWorldBounds(camX, camY);
 
-    // Pellets
-    for (const pl of state.pellets) {
+    for (const pl of pelletsList) {
       const s = worldToScreen(pl.x, pl.y, camX, camY);
       drawCircle(s.x, s.y, radiusFromMass(pl.m) * zoom, pl.c, false);
     }
 
-    // Masa expulsada
-    for (const e of state.ejected) {
+    for (const e of ejectedList) {
       const s = worldToScreen(e.x, e.y, camX, camY);
       drawCircle(s.x, s.y, radiusFromMass(e.m) * zoom, e.c, false);
     }
 
-    // Virus
-    for (const v of state.viruses) {
+    for (const v of virusesList) {
       const s = worldToScreen(v.x, v.y, camX, camY);
       drawVirus(s.x, s.y, radiusFromMass(v.m) * zoom);
     }
 
-    // Células ordenadas por masa
-    const cells = [...state.cells].sort((a, b) => a.m - b.m);
-    for (const c of cells) {
+    cellsList.sort((a, b) => a.m - b.m);
+    for (const c of cellsList) {
       const s = worldToScreen(c.x, c.y, camX, camY);
       const r = radiusFromMass(c.m) * zoom;
       drawCircle(s.x, s.y, r, c.c);
-      // Nombre y masa
       if (r > 18) {
         ctx.fillStyle = '#fff';
         ctx.strokeStyle = 'rgba(0,0,0,0.7)';
@@ -290,26 +362,26 @@
         ctx.strokeText(c.n, s.x, s.y - r * 0.12);
         ctx.fillText(c.n, s.x, s.y - r * 0.12);
         ctx.font = `${Math.max(10, r * 0.22)}px Segoe UI, sans-serif`;
-        ctx.strokeText(c.m, s.x, s.y + r * 0.25);
-        ctx.fillText(c.m, s.x, s.y + r * 0.25);
+        const massLabel = Math.round(c.m);
+        ctx.strokeText(massLabel, s.x, s.y + r * 0.25);
+        ctx.fillText(massLabel, s.x, s.y + r * 0.25);
       }
     }
 
-    // HUD
-    massEl.textContent = `Masa: ${totalMass}`;
-    const uniquePlayers = new Set(state.cells.map(c => c.pid));
+    massEl.textContent = `Masa: ${Math.round(totalMass)}`;
+    const uniquePlayers = new Set(cellsList.map(c => c.pid));
     playersEl.textContent = `Jugadores: ${uniquePlayers.size}`;
 
     boardEl.innerHTML = '';
-    for (const p of state.board) {
+    for (const p of lastMeta.board) {
       const li = document.createElement('li');
       const color = p.team ? (p.team === 'red' ? '#ff5252' : '#448aff') : '#eee';
       li.innerHTML = `<span style="color:${color}">${escapeHtml(p.name)}</span><b>${p.mass}</b>`;
       boardEl.appendChild(li);
     }
-    if (state.teams) {
-      redScoreEl.textContent = state.teams.red;
-      blueScoreEl.textContent = state.teams.blue;
+    if (lastMeta.teams) {
+      redScoreEl.textContent = lastMeta.teams.red;
+      blueScoreEl.textContent = lastMeta.teams.blue;
     }
 
     requestAnimationFrame(render);
