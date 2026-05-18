@@ -208,16 +208,25 @@ function updateCells(dt) {
       if (Math.abs(c.vx) < 0.05) c.vx = 0;
       if (Math.abs(c.vy) < 0.05) c.vy = 0;
 
-      // Mover hacia el target
+      // Velocidad deseada hacia el cursor, suavizada (steering)
+      const sp = speedFromMass(c.mass);
       const dx = p.target.x - c.x;
       const dy = p.target.y - c.y;
       const len = Math.hypot(dx, dy);
+      let desiredVx = 0, desiredVy = 0;
       if (len > 1) {
-        const sp = speedFromMass(c.mass);
-        const step = Math.min(sp, len);
-        c.x += (dx / len) * step;
-        c.y += (dy / len) * step;
+        // Frena al acercarse al cursor (zona muerta proporcional a la velocidad)
+        const slow = len < sp * 2 ? len / (sp * 2) : 1;
+        desiredVx = (dx / len) * sp * slow;
+        desiredVy = (dy / len) * sp * slow;
       }
+      // Inercia direccional: cuanto más lento sea TURN_RATE, más curvo el giro
+      if (c.steerVx === undefined) { c.steerVx = desiredVx; c.steerVy = desiredVy; }
+      const TURN_RATE = 0.22;
+      c.steerVx += (desiredVx - c.steerVx) * TURN_RATE;
+      c.steerVy += (desiredVy - c.steerVy) * TURN_RATE;
+      c.x += c.steerVx;
+      c.y += c.steerVy;
 
       // Decaimiento de masa lento para evitar acumulación infinita
       if (c.mass > 100) c.mass *= 0.9995;

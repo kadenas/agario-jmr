@@ -187,7 +187,7 @@
 
   function drawGrid(camX, camY) {
     const step = 50;
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     ctx.lineWidth = 1;
     const halfW = canvas.width / (2 * zoom);
     const halfH = canvas.height / (2 * zoom);
@@ -225,33 +225,127 @@
     };
   }
 
-  function drawCircle(x, y, r, color, stroke = true) {
+  // ===== Helpers de color =====
+  function hexToRgb(hex) {
+    const c = hex.replace('#', '');
+    return {
+      r: parseInt(c.substr(0, 2), 16),
+      g: parseInt(c.substr(2, 2), 16),
+      b: parseInt(c.substr(4, 2), 16),
+    };
+  }
+  function shade(hex, amount) {
+    // amount > 0: clarear; amount < 0: oscurecer
+    const { r, g, b } = hexToRgb(hex);
+    const ch = (v) => Math.max(0, Math.min(255, Math.round(
+      v + (amount > 0 ? (255 - v) * amount : v * amount)
+    )));
+    return `rgb(${ch(r)}, ${ch(g)}, ${ch(b)})`;
+  }
+  function rgba(hex, a) {
+    const { r, g, b } = hexToRgb(hex);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  function drawCell(x, y, r, color, wobbleSeed, time) {
+    // Wobble en el contorno para células medianas/grandes
+    const segments = r > 18 ? Math.min(48, Math.max(24, Math.floor(r * 0.7))) : 0;
+    if (segments > 0) {
+      ctx.beginPath();
+      for (let i = 0; i <= segments; i++) {
+        const ang = (i / segments) * Math.PI * 2;
+        const n =
+          Math.sin(ang * 6 + time * 0.003 + wobbleSeed) * 0.010 +
+          Math.sin(ang * 3 - time * 0.002 + wobbleSeed * 1.7) * 0.014;
+        const rr = r * (1 + n);
+        const px = x + Math.cos(ang) * rr;
+        const py = y + Math.sin(ang) * rr;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+    }
+
+    // Gradiente radial con highlight desplazado arriba-izquierda
+    const grad = ctx.createRadialGradient(
+      x - r * 0.35, y - r * 0.35, r * 0.05,
+      x, y, r
+    );
+    grad.addColorStop(0, shade(color, 0.35));
+    grad.addColorStop(0.55, color);
+    grad.addColorStop(1, shade(color, -0.18));
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Borde tintado (versión oscura del propio color)
+    ctx.strokeStyle = shade(color, -0.45);
+    ctx.lineWidth = Math.max(2, r * 0.07);
+    ctx.stroke();
+  }
+
+  function drawPellet(x, y, r, color) {
+    // Halo
+    if (r > 1.5) {
+      const halo = ctx.createRadialGradient(x, y, r * 0.4, x, y, r * 2.6);
+      halo.addColorStop(0, rgba(color, 0.45));
+      halo.addColorStop(1, rgba(color, 0));
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Pellet
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
-    if (stroke) {
-      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-      ctx.lineWidth = Math.max(2, r * 0.06);
-      ctx.stroke();
+    // Highlight superior
+    if (r > 2.5) {
+      ctx.beginPath();
+      ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.4, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+      ctx.fill();
     }
   }
 
-  function drawVirus(x, y, r) {
-    const spikes = 16;
+  function drawEjected(x, y, r, color) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
+    g.addColorStop(0, shade(color, 0.30));
+    g.addColorStop(1, shade(color, -0.20));
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.strokeStyle = shade(color, -0.40);
+    ctx.lineWidth = Math.max(1.5, r * 0.08);
+    ctx.stroke();
+  }
+
+  function drawVirus(x, y, r, time) {
+    const spikes = 18;
+    // Pulso suave del radio
+    const pulse = 1 + Math.sin(time * 0.002) * 0.015;
+    const R = r * pulse;
     ctx.beginPath();
     for (let i = 0; i < spikes * 2; i++) {
       const ang = (i / (spikes * 2)) * Math.PI * 2;
-      const rr = i % 2 === 0 ? r : r * 0.82;
+      const rr = i % 2 === 0 ? R : R * 0.80;
       const px = x + Math.cos(ang) * rr;
       const py = y + Math.sin(ang) * rr;
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
     }
     ctx.closePath();
-    ctx.fillStyle = '#33d17a';
+    const grad = ctx.createRadialGradient(x - R * 0.3, y - R * 0.3, R * 0.1, x, y, R);
+    grad.addColorStop(0, '#5fe39a');
+    grad.addColorStop(0.6, '#33d17a');
+    grad.addColorStop(1, '#1f8b54');
+    ctx.fillStyle = grad;
     ctx.fill();
-    ctx.strokeStyle = '#1b6e3e';
+    ctx.strokeStyle = '#0f5530';
     ctx.lineWidth = 3;
     ctx.stroke();
   }
@@ -326,45 +420,63 @@
       : 1;
     zoom += (targetZoom - zoom) * 0.08;
 
-    ctx.fillStyle = '#1f2638';
+    // Fondo: gradiente radial centrado + vignette
+    const bgGrad = ctx.createRadialGradient(
+      canvas.width / 2, canvas.height / 2, 0,
+      canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.7
+    );
+    bgGrad.addColorStop(0, '#2a3148');
+    bgGrad.addColorStop(0.7, '#1a1f2e');
+    bgGrad.addColorStop(1, '#0c0f18');
+    ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     drawGrid(camX, camY);
     drawWorldBounds(camX, camY);
 
+    const now = performance.now();
+
     for (const pl of pelletsList) {
       const s = worldToScreen(pl.x, pl.y, camX, camY);
-      drawCircle(s.x, s.y, radiusFromMass(pl.m) * zoom, pl.c, false);
+      drawPellet(s.x, s.y, radiusFromMass(pl.m) * zoom, pl.c);
     }
 
     for (const e of ejectedList) {
       const s = worldToScreen(e.x, e.y, camX, camY);
-      drawCircle(s.x, s.y, radiusFromMass(e.m) * zoom, e.c, false);
+      drawEjected(s.x, s.y, radiusFromMass(e.m) * zoom, e.c);
     }
 
     for (const v of virusesList) {
       const s = worldToScreen(v.x, v.y, camX, camY);
-      drawVirus(s.x, s.y, radiusFromMass(v.m) * zoom);
+      drawVirus(s.x, s.y, radiusFromMass(v.m) * zoom, now);
     }
 
     cellsList.sort((a, b) => a.m - b.m);
     for (const c of cellsList) {
       const s = worldToScreen(c.x, c.y, camX, camY);
       const r = radiusFromMass(c.m) * zoom;
-      drawCircle(s.x, s.y, r, c.c);
+      // Seed estable basado en el id para que el wobble sea coherente por célula
+      const seed = (c.id * 0.123) % (Math.PI * 2);
+      drawCell(s.x, s.y, r, c.c, seed, now);
       if (r > 18) {
         ctx.fillStyle = '#fff';
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-        ctx.lineWidth = 3;
-        ctx.font = `bold ${Math.max(12, r * 0.32)}px Segoe UI, sans-serif`;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.lineWidth = Math.max(3, r * 0.06);
+        ctx.font = `700 ${Math.max(13, r * 0.34)}px "Segoe UI", system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.strokeText(c.n, s.x, s.y - r * 0.12);
-        ctx.fillText(c.n, s.x, s.y - r * 0.12);
-        ctx.font = `${Math.max(10, r * 0.22)}px Segoe UI, sans-serif`;
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = Math.max(4, r * 0.12);
+        ctx.shadowOffsetY = 2;
+        ctx.strokeText(c.n, s.x, s.y - r * 0.13);
+        ctx.fillText(c.n, s.x, s.y - r * 0.13);
+        ctx.font = `600 ${Math.max(11, r * 0.22)}px "Segoe UI", system-ui, sans-serif`;
         const massLabel = Math.round(c.m);
-        ctx.strokeText(massLabel, s.x, s.y + r * 0.25);
-        ctx.fillText(massLabel, s.x, s.y + r * 0.25);
+        ctx.strokeText(massLabel, s.x, s.y + r * 0.27);
+        ctx.fillText(massLabel, s.x, s.y + r * 0.27);
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetY = 0;
       }
     }
 
