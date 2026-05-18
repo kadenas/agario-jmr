@@ -93,6 +93,8 @@
   let touchActive = false;
   let zoom = 1;
   let wakeLock = null;
+  // Última posición de cámara renderizada (interpolada). La usamos para convertir mouse/touch a mundo
+  let camRender = { x: 0, y: 0 };
 
   function snapshotFromMsg(msg) {
     const cells = new Map();
@@ -132,7 +134,8 @@
         deadOverlay.classList.add('hidden');
         hud.classList.remove('hidden');
         teamScoresEl.classList.toggle('hidden', mode !== 'teams');
-        if (isTouchDevice) touchControls.classList.remove('hidden');
+        // Siempre mostrar los botones en partida; en desktop también sirven y refuerzan la UX
+        touchControls.classList.remove('hidden');
         requestWakeLock();
       } else if (msg.type === 'state') {
         snapshots.push(snapshotFromMsg(msg));
@@ -179,7 +182,9 @@
   });
 
   // ===== Input =====
+  let lastTouchAt = 0; // timestamp del último evento táctil; ignora ratón por 500ms tras un touch
   canvas.addEventListener('mousemove', (e) => {
+    if (performance.now() - lastTouchAt < 500) return;
     mouse.x = e.clientX;
     mouse.y = e.clientY;
   });
@@ -188,13 +193,14 @@
   function sendInput() {
     if (!ws || ws.readyState !== 1) return;
     const now = performance.now();
-    if (now - lastInputSent < 33) return;
+    if (now - lastInputSent < 20) return;
     lastInputSent = now;
-    // Convertir mouse a coordenadas del mundo
+    // Convertir mouse/touch a coordenadas del mundo usando la cámara que ESTÁ EN PANTALLA,
+    // no la posición del servidor (que puede llevar 100-150ms de retraso)
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const wx = lastMeta.you.x + (mouse.x - cx) / zoom;
-    const wy = lastMeta.you.y + (mouse.y - cy) / zoom;
+    const wx = camRender.x + (mouse.x - cx) / zoom;
+    const wy = camRender.y + (mouse.y - cy) / zoom;
     ws.send(JSON.stringify({ type: 'input', x: wx, y: wy }));
   }
 
@@ -211,6 +217,7 @@
 
   // ===== Input táctil =====
   function updateTouch(e) {
+    lastTouchAt = performance.now();
     if (e.touches && e.touches.length > 0) {
       const t = e.touches[0];
       mouse.x = t.clientX;
@@ -232,6 +239,7 @@
     updateTouch(e);
   }, { passive: false });
   canvas.addEventListener('touchend', (e) => {
+    e.preventDefault(); // evita que el navegador dispare mousemove/mousedown fantasma
     if (!e.touches || e.touches.length === 0) {
       // Al soltar, parar el movimiento → target = centro de la pantalla = centro de la célula
       mouse.x = canvas.width / 2;
@@ -240,12 +248,13 @@
     } else {
       updateTouch(e);
     }
-  });
-  canvas.addEventListener('touchcancel', () => {
+  }, { passive: false });
+  canvas.addEventListener('touchcancel', (e) => {
+    e.preventDefault();
     mouse.x = canvas.width / 2;
     mouse.y = canvas.height / 2;
     touchActive = false;
-  });
+  }, { passive: false });
 
   // Botones flotantes de acción
   function sendAction(type) {
@@ -510,6 +519,8 @@
       camX = myCx / myMass;
       camY = myCy / myMass;
     }
+    camRender.x = camX;
+    camRender.y = camY;
 
     const targetZoom = totalMass > 0
       ? Math.max(0.35, Math.min(1.4, 50 / Math.sqrt(totalMass + 25)))
