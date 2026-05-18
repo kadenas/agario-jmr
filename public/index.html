@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agar.io JMR</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="menu" class="overlay">
+    <div class="card">
+      <h1>Agar.io <span class="badge">JMR</span></h1>
+      <p class="hint">Mueve con el ratón · Espacio = dividir · W = expulsar masa</p>
+
+      <label class="field">
+        <span>Nombre</span>
+        <input id="name" maxlength="16" placeholder="Tu nombre" />
+      </label>
+
+      <div class="field">
+        <span>Color / Skin</span>
+        <div id="skins" class="skins"></div>
+      </div>
+
+      <div class="field">
+        <span>Modo de juego</span>
+        <div class="modes">
+          <button class="mode active" data-mode="ffa">FFA (Todos vs Todos)</button>
+          <button class="mode" data-mode="teams">Equipos (Rojo vs Azul)</button>
+        </div>
+      </div>
+
+      <button id="play" class="play">Jugar</button>
+    </div>
+  </div>
+
+  <div id="dead" class="overlay hidden">
+    <div class="card">
+      <h2>Te comieron 💀</h2>
+      <p id="finalMass"></p>
+      <button id="respawn" class="play">Volver a jugar</button>
+    </div>
+  </div>
+
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="stats">
+      <span id="mass">Masa: 0</span>
+      <span id="players">Jugadores: 0</span>
+    </div>
+    <div id="leaderboard">
+      <h3>Top</h3>
+      <ol id="board"></ol>
+      <div id="teamScores" class="hidden">
+        <div class="team red"><span>Rojo</span><b id="redScore">0</b></div>
+        <div class="team blue"><span>Azul</span><b id="blueScore">0</b></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="client.js"></script>
+</body>
+</html>
