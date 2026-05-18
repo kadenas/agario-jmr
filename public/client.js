@@ -20,6 +20,17 @@
   const teamScoresEl = document.getElementById('teamScores');
   const redScoreEl = document.getElementById('redScore');
   const blueScoreEl = document.getElementById('blueScore');
+  const touchControls = document.getElementById('touchControls');
+  const btnSplit = document.getElementById('btnSplit');
+  const btnEject = document.getElementById('btnEject');
+
+  function detectTouch() {
+    return ('ontouchstart' in window) ||
+      (navigator.maxTouchPoints > 0) ||
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.innerWidth < 768;
+  }
+  let isTouchDevice = detectTouch();
 
   let selectedSkin = SKINS[Math.floor(Math.random() * SKINS.length)];
   let selectedMode = 'ffa';
@@ -54,6 +65,13 @@
   function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
+    // Re-evaluar dispositivo táctil en caso de cambio de viewport
+    if (detectTouch()) {
+      isTouchDevice = true;
+      if (!hud.classList.contains('hidden')) {
+        touchControls.classList.remove('hidden');
+      }
+    }
   }
   window.addEventListener('resize', resize);
   resize();
@@ -70,8 +88,11 @@
   const snapshots = []; // {t, cells: Map, pellets: Map, viruses: Map, ejected: Map, board, teams, you}
   let lastMeta = { board: [], teams: null, you: { x: 0, y: 0 } };
 
-  let mouse = { x: 0, y: 0 };
+  // Iniciar en el centro: con eso el target = centro de la célula → quieta hasta que el usuario mueva
+  let mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  let touchActive = false;
   let zoom = 1;
+  let wakeLock = null;
 
   function snapshotFromMsg(msg) {
     const cells = new Map();
@@ -111,6 +132,8 @@
         deadOverlay.classList.add('hidden');
         hud.classList.remove('hidden');
         teamScoresEl.classList.toggle('hidden', mode !== 'teams');
+        if (isTouchDevice) touchControls.classList.remove('hidden');
+        requestWakeLock();
       } else if (msg.type === 'state') {
         snapshots.push(snapshotFromMsg(msg));
         // Mantén solo lo necesario para interpolar
@@ -125,10 +148,14 @@
         finalMassEl.textContent = `Masa final: ${totalMass}`;
         deadOverlay.classList.remove('hidden');
         hud.classList.add('hidden');
+        touchControls.classList.add('hidden');
+        releaseWakeLock();
       }
     });
     ws.addEventListener('close', () => {
       ws = null;
+      releaseWakeLock();
+      touchControls.classList.add('hidden');
       setTimeout(() => {
         // Volver a menú si se cierra
         menu.classList.remove('hidden');
@@ -179,6 +206,75 @@
       ws.send(JSON.stringify({ type: 'split' }));
     } else if (e.code === 'KeyW') {
       ws.send(JSON.stringify({ type: 'eject' }));
+    }
+  });
+
+  // ===== Input táctil =====
+  function updateTouch(e) {
+    if (e.touches && e.touches.length > 0) {
+      const t = e.touches[0];
+      mouse.x = t.clientX;
+      mouse.y = t.clientY;
+      touchActive = true;
+    }
+  }
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    updateTouch(e);
+    // Si el primer touch ocurre, garantizamos que se muestren los botones
+    if (!hud.classList.contains('hidden')) {
+      isTouchDevice = true;
+      touchControls.classList.remove('hidden');
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    updateTouch(e);
+  }, { passive: false });
+  canvas.addEventListener('touchend', (e) => {
+    if (!e.touches || e.touches.length === 0) {
+      // Al soltar, parar el movimiento → target = centro de la pantalla = centro de la célula
+      mouse.x = canvas.width / 2;
+      mouse.y = canvas.height / 2;
+      touchActive = false;
+    } else {
+      updateTouch(e);
+    }
+  });
+  canvas.addEventListener('touchcancel', () => {
+    mouse.x = canvas.width / 2;
+    mouse.y = canvas.height / 2;
+    touchActive = false;
+  });
+
+  // Botones flotantes de acción
+  function sendAction(type) {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type }));
+    }
+  }
+  btnSplit.addEventListener('pointerdown', (e) => { e.preventDefault(); sendAction('split'); });
+  btnEject.addEventListener('pointerdown', (e) => { e.preventDefault(); sendAction('eject'); });
+  // Evitar que un toque sobre los botones también dispare touchstart del canvas
+  for (const btn of [btnSplit, btnEject]) {
+    btn.addEventListener('touchstart', e => e.stopPropagation());
+  }
+
+  // ===== Wake lock (mantener pantalla encendida durante la partida) =====
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch {}
+  }
+  function releaseWakeLock() {
+    try { wakeLock && wakeLock.release(); } catch {}
+    wakeLock = null;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !hud.classList.contains('hidden')) {
+      requestWakeLock();
     }
   });
 

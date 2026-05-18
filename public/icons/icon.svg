@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="30%" cy="30%" r="90%">
+      <stop offset="0%" stop-color="#3b3258"/>
+      <stop offset="60%" stop-color="#1a1626"/>
+      <stop offset="100%" stop-color="#0c0916"/>
+    </radialGradient>
+    <radialGradient id="cellMain" cx="35%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#c4a8ff"/>
+      <stop offset="55%" stop-color="#7c4dff"/>
+      <stop offset="100%" stop-color="#321a73"/>
+    </radialGradient>
+    <radialGradient id="cellPink" cx="38%" cy="38%" r="62%">
+      <stop offset="0%" stop-color="#ff9ec6"/>
+      <stop offset="55%" stop-color="#ff4081"/>
+      <stop offset="100%" stop-color="#6b1838"/>
+    </radialGradient>
+    <radialGradient id="cellAmber" cx="35%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#ffd66e"/>
+      <stop offset="55%" stop-color="#ffa726"/>
+      <stop offset="100%" stop-color="#7a4600"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)" rx="104"/>
+
+  <!-- subtle grid -->
+  <g opacity="0.06" stroke="#ffffff" stroke-width="1.5">
+    <line x1="0" y1="128" x2="512" y2="128"/>
+    <line x1="0" y1="256" x2="512" y2="256"/>
+    <line x1="0" y1="384" x2="512" y2="384"/>
+    <line x1="128" y1="0" x2="128" y2="512"/>
+    <line x1="256" y1="0" x2="256" y2="512"/>
+    <line x1="384" y1="0" x2="384" y2="512"/>
+  </g>
+
+  <!-- pellets -->
+  <circle cx="92" cy="110" r="13" fill="#76ff03"/>
+  <circle cx="420" cy="140" r="11" fill="#40c4ff"/>
+  <circle cx="80" cy="400" r="13" fill="#ffd740"/>
+  <circle cx="430" cy="420" r="11" fill="#ff4081"/>
+  <circle cx="60" cy="240" r="9" fill="#1de9b6"/>
+  <circle cx="450" cy="270" r="9" fill="#e040fb"/>
+
+  <!-- secondary cells -->
+  <circle cx="380" cy="385" r="72" fill="url(#cellAmber)" stroke="#5a3500" stroke-width="6"/>
+  <circle cx="125" cy="345" r="58" fill="url(#cellPink)" stroke="#5a1530" stroke-width="6"/>
+
+  <!-- main cell -->
+  <circle cx="225" cy="205" r="138" fill="url(#cellMain)" stroke="#2a1660" stroke-width="10"/>
+</svg>
