@@ -1,5 +1,5 @@
 // Service worker mínimo para instalabilidad PWA y caché de assets estáticos.
-const CACHE = 'agarjmr-v4';
+const CACHE = 'agarjmr-v5';
 const ASSETS = [
   '/',
   '/index.html',

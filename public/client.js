@@ -93,8 +93,113 @@
   let touchActive = false;
   let zoom = 1;
   let wakeLock = null;
-  // Última posición de cámara renderizada (interpolada). La usamos para convertir mouse/touch a mundo
+  // Última posición de cámara renderizada. La usamos para convertir mouse/touch a mundo
   let camRender = { x: 0, y: 0 };
+
+  // ===== Predicción client-side de células propias =====
+  // Espejo de la lógica del servidor para que tu propia célula reaccione al instante
+  const ownCellsLocal = new Map(); // id -> { x, y, mass, color, name, steerVx, steerVy, serverX, serverY }
+  let lastPredictTime = 0;
+  // Constantes que reflejan las del servidor
+  const PRED_TURN_RATE = 0.22;
+  const PRED_TICK_S = 1 / 30;
+
+  function syncOwnCellsFromSnapshot() {
+    if (snapshots.length === 0) return;
+    const latest = snapshots[snapshots.length - 1];
+    const seen = new Set();
+    for (const c of latest.cells.values()) {
+      if (c.pid !== myId) continue;
+      seen.add(c.id);
+      if (!ownCellsLocal.has(c.id)) {
+        ownCellsLocal.set(c.id, {
+          x: c.x, y: c.y,
+          mass: c.m,
+          color: c.c,
+          name: c.n,
+          steerVx: 0, steerVy: 0,
+          serverX: c.x, serverY: c.y,
+        });
+      } else {
+        const local = ownCellsLocal.get(c.id);
+        local.serverX = c.x;
+        local.serverY = c.y;
+        local.mass = c.m;     // la masa es siempre autoritativa del servidor
+        local.color = c.c;
+        local.name = c.n;
+      }
+    }
+    for (const id of [...ownCellsLocal.keys()]) {
+      if (!seen.has(id)) ownCellsLocal.delete(id);
+    }
+  }
+
+  function predictOwnCells(dt) {
+    if (ownCellsLocal.size === 0) return;
+    const ticks = Math.min(2, dt / PRED_TICK_S);
+    // Factor de turn equivalente, decaimiento exponencial
+    const turn = 1 - Math.pow(1 - PRED_TURN_RATE, ticks);
+    // Factor de reconciliación: ~12% por tick → corrección suave en ~250ms
+    const reconcileBlend = 1 - Math.pow(1 - 0.12, ticks);
+
+    // Calcular el target en pantalla → mundo, igual que sendInput
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const offsetX = mouse.x - cx;
+    const offsetY = mouse.y - cy;
+    const offsetLen = Math.hypot(offsetX, offsetY);
+    const inDeadzone = offsetLen < 12;
+
+    for (const cell of ownCellsLocal.values()) {
+      // El target se calcula desde la posición ACTUAL de la célula (no de la cámara),
+      // pues queremos consistencia con el server
+      let targetX, targetY;
+      if (inDeadzone) {
+        targetX = cell.x;
+        targetY = cell.y;
+      } else {
+        targetX = cell.x + offsetX / zoom;
+        targetY = cell.y + offsetY / zoom;
+      }
+
+      const sp = Math.max(1.2, 8 - Math.log2(cell.mass) * 0.55);
+      const dx = targetX - cell.x;
+      const dy = targetY - cell.y;
+      const len = Math.hypot(dx, dy);
+      let desiredVx = 0, desiredVy = 0;
+      if (len > 1) {
+        const slow = len < sp * 2 ? len / (sp * 2) : 1;
+        desiredVx = (dx / len) * sp * slow;
+        desiredVy = (dy / len) * sp * slow;
+      }
+      cell.steerVx += (desiredVx - cell.steerVx) * turn;
+      cell.steerVy += (desiredVy - cell.steerVy) * turn;
+      cell.x += cell.steerVx * ticks;
+      cell.y += cell.steerVy * ticks;
+
+      // Reconciliación con la posición autoritativa del servidor
+      const corrX = cell.serverX - cell.x;
+      const corrY = cell.serverY - cell.y;
+      const corrLen = Math.hypot(corrX, corrY);
+      if (corrLen > 200) {
+        // Saltó (split, respawn, virus push, etc.) → snap
+        cell.x = cell.serverX;
+        cell.y = cell.serverY;
+        cell.steerVx = 0;
+        cell.steerVy = 0;
+      } else if (corrLen > 0.5) {
+        cell.x += corrX * reconcileBlend;
+        cell.y += corrY * reconcileBlend;
+      }
+
+      // Clamp al mundo (igual que el servidor)
+      const r = Math.sqrt(cell.mass) * 4;
+      if (cell.x < r) cell.x = r;
+      if (cell.y < r) cell.y = r;
+      if (cell.x > world.width - r) cell.x = world.width - r;
+      if (cell.y > world.height - r) cell.y = world.height - r;
+    }
+  }
 
   function snapshotFromMsg(msg) {
     const cells = new Map();
@@ -142,6 +247,7 @@
         // Mantén solo lo necesario para interpolar
         while (snapshots.length > 6) snapshots.shift();
         lastMeta = { board: msg.board, teams: msg.teams, you: msg.you };
+        syncOwnCellsFromSnapshot();
       } else if (msg.type === 'dead') {
         const latest = snapshots[snapshots.length - 1];
         let totalMass = 0;
@@ -152,6 +258,7 @@
         deadOverlay.classList.remove('hidden');
         hud.classList.add('hidden');
         touchControls.classList.add('hidden');
+        ownCellsLocal.clear();
         releaseWakeLock();
       }
     });
@@ -363,32 +470,69 @@
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
 
-  function drawCell(x, y, r, color, wobbleSeed, time) {
-    // Wobble en el contorno para células medianas/grandes
-    const segments = r > 18 ? Math.min(48, Math.max(24, Math.floor(r * 0.7))) : 0;
+  function drawCellHalo(x, y, r, color) {
+    if (r < 8) return;
+    const haloR = r * 1.22;
+    const halo = ctx.createRadialGradient(x, y, r * 0.88, x, y, haloR);
+    halo.addColorStop(0, rgba(color, 0.32));
+    halo.addColorStop(1, rgba(color, 0));
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(x, y, haloR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawCell(x, y, r, color, wobbleSeed, time, wallProx, virusBump) {
+    // wallProx = {left, right, top, bottom} con valores 0..1 (0 lejos, 1 tocando)
+    const wpL = wallProx ? wallProx.left : 0;
+    const wpR = wallProx ? wallProx.right : 0;
+    const wpT = wallProx ? wallProx.top : 0;
+    const wpB = wallProx ? wallProx.bottom : 0;
+    const sqX = Math.max(wpL, wpR);
+    const sqY = Math.max(wpT, wpB);
+    const SQ_MAX = 0.28;
+    const BULGE = 0.16;
+    let scaleX = (1 - sqX * SQ_MAX) * (1 + sqY * BULGE);
+    let scaleY = (1 - sqY * SQ_MAX) * (1 + sqX * BULGE);
+
+    ctx.save();
+    ctx.translate(x, y);
+    if (sqX > 0 || sqY > 0) ctx.scale(scaleX, scaleY);
+
+    // Wobble en el contorno para células medianas/grandes; cuando hay bump de virus
+    // añadimos una indentación local en la dirección del virus
+    const segments = r > 18 ? Math.min(56, Math.max(28, Math.floor(r * 0.8))) : 0;
     if (segments > 0) {
       ctx.beginPath();
       for (let i = 0; i <= segments; i++) {
         const ang = (i / segments) * Math.PI * 2;
-        const n =
+        let n =
           Math.sin(ang * 6 + time * 0.003 + wobbleSeed) * 0.010 +
           Math.sin(ang * 3 - time * 0.002 + wobbleSeed * 1.7) * 0.014;
+        // Indentación direccional por contacto con un virus
+        if (virusBump) {
+          const da = ang - virusBump.angle;
+          const ca = Math.cos(da);
+          if (ca > 0.5) {
+            const factor = (ca - 0.5) * 2;
+            n -= virusBump.depth * factor * factor;
+          }
+        }
         const rr = r * (1 + n);
-        const px = x + Math.cos(ang) * rr;
-        const py = y + Math.sin(ang) * rr;
+        const px = Math.cos(ang) * rr;
+        const py = Math.sin(ang) * rr;
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
       ctx.closePath();
     } else {
       ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
     }
 
-    // Gradiente radial con highlight desplazado arriba-izquierda
     const grad = ctx.createRadialGradient(
-      x - r * 0.35, y - r * 0.35, r * 0.05,
-      x, y, r
+      -r * 0.35, -r * 0.35, r * 0.05,
+      0, 0, r
     );
     grad.addColorStop(0, shade(color, 0.35));
     grad.addColorStop(0.55, color);
@@ -396,10 +540,10 @@
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Borde tintado (versión oscura del propio color)
     ctx.strokeStyle = shade(color, -0.45);
     ctx.lineWidth = Math.max(2, r * 0.07);
     ctx.stroke();
+    ctx.restore();
   }
 
   function drawPellet(x, y, r, color) {
@@ -505,13 +649,27 @@
   }
 
   function render() {
-    sendInput();
+    const now = performance.now();
+    const dt = lastPredictTime === 0 ? 1 / 60 : Math.min(0.1, (now - lastPredictTime) / 1000);
+    lastPredictTime = now;
 
-    const renderTime = performance.now() - INTERP_DELAY;
+    sendInput();
+    predictOwnCells(dt);
+
+    const renderTime = now - INTERP_DELAY;
     const cellsList = interpEntities(s => s.cells, renderTime);
     const pelletsList = interpEntities(s => s.pellets, renderTime);
     const virusesList = interpEntities(s => s.viruses, renderTime);
     const ejectedList = interpEntities(s => s.ejected, renderTime);
+
+    // Sustituir células propias por las predichas (instant response)
+    for (let i = 0; i < cellsList.length; i++) {
+      const c = cellsList[i];
+      if (c.pid === myId && ownCellsLocal.has(c.id)) {
+        const local = ownCellsLocal.get(c.id);
+        cellsList[i] = { ...c, x: local.x, y: local.y, m: local.mass };
+      }
+    }
 
     // Cámara: centrar en la masa propia interpolada
     let camX = lastMeta.you.x;
@@ -552,8 +710,6 @@
     drawGrid(camX, camY);
     drawWorldBounds(camX, camY);
 
-    const now = performance.now();
-
     for (const pl of pelletsList) {
       const s = worldToScreen(pl.x, pl.y, camX, camY);
       drawPellet(s.x, s.y, radiusFromMass(pl.m) * zoom, pl.c);
@@ -566,12 +722,56 @@
 
     // Células primero, virus después → las células pasan por DEBAJO de los virus
     cellsList.sort((a, b) => a.m - b.m);
-    for (const c of cellsList) {
+
+    // Pre-cómputo: proximidad a paredes y a virus por célula (en coordenadas mundo)
+    function computeWallProx(c) {
+      const rw = radiusFromMass(c.m);
+      const range = Math.max(20, rw * 0.6);
+      return {
+        left: Math.max(0, 1 - (c.x - rw) / range),
+        right: Math.max(0, 1 - (world.width - c.x - rw) / range),
+        top: Math.max(0, 1 - (c.y - rw) / range),
+        bottom: Math.max(0, 1 - (world.height - c.y - rw) / range),
+      };
+    }
+    function computeVirusBump(c) {
+      const rw = radiusFromMass(c.m);
+      let bump = null;
+      for (const v of virusesList) {
+        const vr = radiusFromMass(v.m);
+        const dx = v.x - c.x, dy = v.y - c.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 0 && d < rw + vr * 1.05) {
+          const overlap = (rw + vr) - d;
+          const depth = Math.min(0.30, overlap / Math.max(rw, 1));
+          if (depth > 0 && (!bump || depth > bump.depth)) {
+            bump = { angle: Math.atan2(dy, dx), depth };
+          }
+        }
+      }
+      return bump;
+    }
+    const cellMeta = cellsList.map(c => ({
+      cell: c,
+      wp: computeWallProx(c),
+      vb: computeVirusBump(c),
+    }));
+
+    // Pasada 1: halos (luego cuerpo encima)
+    for (const m of cellMeta) {
+      const c = m.cell;
       const s = worldToScreen(c.x, c.y, camX, camY);
       const r = radiusFromMass(c.m) * zoom;
-      // Seed estable basado en el id para que el wobble sea coherente por célula
+      drawCellHalo(s.x, s.y, r, c.c);
+    }
+
+    // Pasada 2: cuerpos y etiquetas
+    for (const m of cellMeta) {
+      const c = m.cell;
+      const s = worldToScreen(c.x, c.y, camX, camY);
+      const r = radiusFromMass(c.m) * zoom;
       const seed = (c.id * 0.123) % (Math.PI * 2);
-      drawCell(s.x, s.y, r, c.c, seed, now);
+      drawCell(s.x, s.y, r, c.c, seed, now, m.wp, m.vb);
       if (r > 18) {
         ctx.fillStyle = '#fff';
         ctx.strokeStyle = 'rgba(0,0,0,0.85)';
